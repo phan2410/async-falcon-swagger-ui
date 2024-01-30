@@ -1,8 +1,12 @@
-import os
 import json
+import mimetypes
+import os
+
+import aiofiles.os as aios
 import falcon
 import jinja2
-import mimetypes
+from falcon import HTTP_200
+from falcon.routing.static import _AsyncFileReader
 
 
 class TemplateRenderer(object):
@@ -10,9 +14,9 @@ class TemplateRenderer(object):
     def __init__(self, templates_path):
         self.tpl_path = templates_path
 
-    def render(self, tpl_name, *args, **kwargs):
+    async def render(self, tpl_name, *args, **kwargs):
         template = self._load_template(tpl_name)
-        return template.render(*args, **kwargs)
+        return await template.render_async(*args, **kwargs)
 
     def _load_template(self, tpl):
 
@@ -25,7 +29,8 @@ class TemplateRenderer(object):
         return jinja2.Environment(
             loader=jinja2.FileSystemLoader(
                 os.path.join(path, templates_directory)
-            )
+            ),
+            enable_async=True,
         ).get_template(filename)
 
 
@@ -35,18 +40,18 @@ class StaticSinkAdapter(object):
         curr_dir = os.path.dirname(os.path.abspath(__file__))
         self.static_dir = os.path.join(curr_dir, static_path)
 
-    def __call__(self, req, resp, filepath):
+    async def __call__(self, req, resp, filepath):
         resp.content_type = mimetypes.guess_type(filepath)[0]
         file_path = os.path.normpath(
             os.path.join(self.static_dir, filepath)
         )
         if not file_path.startswith(self.static_dir + os.sep):
             raise falcon.HTTPNotFound()
-        if not os.path.exists(file_path):
+        if not await aios.path.exists(file_path):
             raise falcon.HTTPNotFound()
 
-        stream = open(file_path, 'rb')
-        stream_len = os.path.getsize(file_path)
+        stream = _AsyncFileReader(open(file_path, 'rb'))
+        stream_len = await aios.path.getsize(file_path)
         resp.set_stream(stream, stream_len)
 
 
@@ -56,9 +61,10 @@ class SwaggerUiResource(object):
         self.templates = TemplateRenderer(templates_folder)
         self.context = default_context
 
-    def on_get(self, req, resp):
+    async def on_get(self, req, resp):
         resp.content_type = 'text/html'
-        resp.text = self.templates.render('index.html', **self.context)
+        resp.text = await self.templates.render('index.html', **self.context)
+        resp.status = HTTP_200
 
 
 def register_swaggerui_app(app, swagger_uri, api_url, page_title='Swagger UI', favicon_url=None, config=None, uri_prefix=""):
@@ -97,7 +103,7 @@ def register_swaggerui_app(app, swagger_uri, api_url, page_title='Swagger UI', f
         'config_json': json.dumps(default_config)
     }
 
-    if  swagger_uri.endswith('/'):
+    if swagger_uri.endswith('/'):
         app.add_sink(
             StaticSinkAdapter(static_folder),
             r'%s(?P<filepath>.*)\Z' % swagger_uri,
